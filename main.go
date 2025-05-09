@@ -22,7 +22,6 @@ type DBConfig struct {
 }
 
 func loadConfig() DBConfig {
-	// Load .env file
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("Warning: Could not load .env file (using environment variables directly): %v", err)
@@ -50,7 +49,6 @@ func createConnectionPool(config DBConfig) (*sql.DB, error) {
 	db.SetMaxIdleConns(config.PoolSize)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	// Verify connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
@@ -60,14 +58,128 @@ func createConnectionPool(config DBConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-// [Keep all the benchmark functions from previous code: insertUsingPoolQuery,
-// insertUsingGetConnection, insertUsingPoolExec, insertUsingTransaction, runBenchmark]
+func insertUsingPoolQuery(db *sql.DB, n int) error {
+	start := time.Now()
+
+	for i := 0; i < n; i++ {
+		_, err := db.Query(
+			"INSERT INTO benchmark_users (name, email) VALUES (?, ?)",
+			fmt.Sprintf("UserPool%d", i),
+			fmt.Sprintf("pool%d@example.com", i),
+		)
+		if err != nil {
+			return fmt.Errorf("query error: %v", err)
+		}
+	}
+
+	duration := time.Since(start)
+	log.Printf("Direct db.Query: Inserted %d rows in %v", n, duration)
+	return nil
+}
+
+func insertUsingGetConnection(db *sql.DB, n int) error {
+	start := time.Now()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return fmt.Errorf("get connection error: %v", err)
+	}
+	defer conn.Close()
+
+	for i := 0; i < n; i++ {
+		_, err := conn.ExecContext(
+			context.Background(),
+			"INSERT INTO benchmark_users (name, email) VALUES (?, ?)",
+			fmt.Sprintf("UserConn%d", i),
+			fmt.Sprintf("conn%d@example.com", i),
+		)
+		if err != nil {
+			return fmt.Errorf("exec error: %v", err)
+		}
+	}
+
+	duration := time.Since(start)
+	log.Printf("Using db.Conn.ExecContext: Inserted %d rows in %v", n, duration)
+	return nil
+}
+
+func insertUsingPoolExec(db *sql.DB, n int) error {
+	start := time.Now()
+
+	for i := 0; i < n; i++ {
+		_, err := db.Exec(
+			"INSERT INTO benchmark_users (name, email) VALUES (?, ?)",
+			fmt.Sprintf("UserExec%d", i),
+			fmt.Sprintf("exec%d@example.com", i),
+		)
+		if err != nil {
+			return fmt.Errorf("exec error: %v", err)
+		}
+	}
+
+	duration := time.Since(start)
+	log.Printf("Direct db.Exec: Inserted %d rows in %v", n, duration)
+	return nil
+}
+
+func insertUsingTransaction(db *sql.DB, n int) error {
+	start := time.Now()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction error: %v", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	for i := 0; i < n; i++ {
+		_, err := tx.Exec(
+			"INSERT INTO benchmark_users (name, email) VALUES (?, ?)",
+			fmt.Sprintf("UserTx%d", i),
+			fmt.Sprintf("tx%d@example.com", i),
+		)
+		if err != nil {
+			return fmt.Errorf("tx exec error: %v", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit error: %v", err)
+	}
+
+	duration := time.Since(start)
+	log.Printf("Using transaction: Inserted %d rows in %v", n, duration)
+	return nil
+}
+
+func runBenchmark(db *sql.DB, n int) error {
+	log.Println("Starting benchmark...\n")
+
+	if err := insertUsingPoolQuery(db, n); err != nil {
+		return err
+	}
+
+	if err := insertUsingGetConnection(db, n); err != nil {
+		return err
+	}
+
+	if err := insertUsingPoolExec(db, n); err != nil {
+		return err
+	}
+
+	if err := insertUsingTransaction(db, n); err != nil {
+		return err
+	}
+
+	log.Println("\nBenchmark completed.")
+	return nil
+}
 
 func main() {
-	// Load configuration from .env
 	config := loadConfig()
-
-	// Create database connection pool
 	db, err := createConnectionPool(config)
 	if err != nil {
 		log.Fatalf("Failed to create connection pool: %v", err)
@@ -76,14 +188,12 @@ func main() {
 
 	log.Println("Database connected successfully")
 
-	// Run benchmark with configurable number of inserts
 	insertCount := getEnvAsInt("BENCHMARK_INSERT_COUNT", 1000)
 	if err := runBenchmark(db, insertCount); err != nil {
 		log.Fatalf("Benchmark failed: %v", err)
 	}
 }
 
-// Helper functions
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value
